@@ -1,50 +1,38 @@
-import gradio as gr
+import spaces
 import os
+import json
+import time
 import torch
-import numpy as np
 from PIL import Image
+from tqdm import tqdm
+import gradio as gr
+
+from safetensors.torch import save_file
 from src.pipeline import FluxPipeline
 from src.transformer_flux import FluxTransformer2DModel
-from src.lora_helper import set_single_lora
-from torchvision import transforms
+from src.lora_helper import set_single_lora, set_multi_lora, unset_lora
 
 # Initialize the image processor
 base_path = "black-forest-labs/FLUX.1-dev"    
 lora_base_path = "./models"
 
-# Ensure the model uses GPU if available
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Load models and move to GPU
-pipe = FluxPipeline.from_pretrained(base_path, torch_dtype=torch.float16).to(device)  # Use fp16 for reduced memory consumption
-transformer = FluxTransformer2DModel.from_pretrained(base_path, subfolder="transformer", torch_dtype=torch.float16).to(device)
+pipe = FluxPipeline.from_pretrained(base_path, torch_dtype=torch.bfloat16)
+transformer = FluxTransformer2DModel.from_pretrained(base_path, subfolder="transformer", torch_dtype=torch.bfloat16)
 pipe.transformer = transformer
+pipe.to("cuda")
 
-# Image transformation to tensor
-transform = transforms.Compose([
-    transforms.ToTensor(),  # Convert the image to a tensor in [0, 1]
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Normalize to [-1, 1] for many models
-])
-
-# Function to clear the cache
 def clear_cache(transformer):
     for name, attn_processor in transformer.attn_processors.items():
         attn_processor.bank_kv.clear()
 
-# Image generation function
-def generate_image(prompt, spatial_img, height, width, seed, control_type):
-    # Load and process the spatial image
-    spatial_img = spatial_img.convert("RGB")
-    spatial_img = transform(spatial_img).unsqueeze(0).to(device)  # Convert to tensor and add batch dimension
-
-    # Set the control type (e.g., Ghibli)
+# Define the Gradio interface
+@spaces.GPU()
+def single_condition_generate_image(prompt, spatial_img, height, width, seed, control_type):
+    # Set the control type
     if control_type == "Ghibli":
         lora_path = os.path.join(lora_base_path, "Ghibli.safetensors")
     set_single_lora(pipe.transformer, lora_path, lora_weights=[1], cond_size=512)
-
-    # Prepare the generator for the specified seed and move it to the GPU
-    generator = torch.Generator(device=device).manual_seed(seed)
-
+    
     # Process the image
     spatial_imgs = [spatial_img] if spatial_img else []
     image = pipe(
@@ -54,39 +42,57 @@ def generate_image(prompt, spatial_img, height, width, seed, control_type):
         guidance_scale=3.5,
         num_inference_steps=25,
         max_sequence_length=512,
-        generator=generator,  # Generator now uses the correct device (GPU)
+        generator=torch.Generator("cpu").manual_seed(seed), 
         subject_images=[],
         spatial_images=spatial_imgs,
         cond_size=512,
     ).images[0]
-
-    # Clear the cache after generation
     clear_cache(pipe.transformer)
-
     return image
 
-# Gradio interface
-def gradio_interface(prompt, spatial_img, height, width, seed, control_type):
-    # Generate the image based on the user input
-    generated_image = generate_image(prompt, spatial_img, height, width, seed, control_type)
-    
-    return generated_image
+# Define the Gradio interface components
+control_types = ["Ghibli"]
 
-# Define the Gradio interface
-iface = gr.Interface(
-    fn=gradio_interface,
-    inputs=[
-        gr.Textbox(label="Prompt", placeholder="Enter a description for the generated image"),
-        gr.Image(type="pil", label="Upload Spatial Image"),
-        gr.Slider(128, 1024, step=1, label="Height", value=768),
-        gr.Slider(128, 1024, step=1, label="Width", value=768),
-        gr.Slider(1, 100, step=1, label="Seed", value=42),
-        gr.Radio(["Ghibli", "Other"], label="Control Type", value="Ghibli")
-    ],
-    outputs=gr.Image(type="pil"),
-    server_port=8080  # Run on port 8080
-)
+# Example data
+single_examples = [
+    ["Ghibli Studio style, Charming hand-drawn anime-style illustration", Image.open("./test_imgs/00.png"), 680, 1024, 5, "Ghibli"],
+]
 
-# Launch the Gradio app
-if __name__ == "__main__":
-    iface.launch(server_name="0.0.0.0", server_port=8080)
+
+# Create the Gradio Blocks interface
+with gr.Blocks() as demo:
+    gr.Markdown("# Ghibli Studio Control Image Generation with EasyControl")
+    gr.Markdown("Generate images using EasyControl with Ghibli control LoRAs.")
+
+    with gr.Tab("Ghibli Condition Generation"):
+        with gr.Row():
+            with gr.Column():
+                prompt = gr.Textbox(label="Prompt", value="Ghibli Studio style, Charming hand-drawn anime-style illustration")
+                spatial_img = gr.Image(label="Ghibli Image", type="pil")  # Upload image
+                height = gr.Slider(minimum=256, maximum=1024, step=64, label="Height", value=768)
+                width = gr.Slider(minimum=256, maximum=1024, step=64, label="Width", value=768)
+                seed = gr.Number(label="Seed", value=42)
+                control_type = gr.Dropdown(choices=control_types, label="Control Type")
+                single_generate_btn = gr.Button("Generate Image")
+            with gr.Column():
+                single_output_image = gr.Image(label="Generated Image")
+
+        # Add examples for Single Condition Generation
+        gr.Examples(
+            examples=single_examples,
+            inputs=[prompt, spatial_img, height, width, seed, control_type],
+            outputs=single_output_image,
+            fn=single_condition_generate_image,
+            cache_examples=False,
+            label="Single Condition Examples"
+        )
+
+    # Link the buttons to the functions
+    single_generate_btn.click(
+        single_condition_generate_image,
+        inputs=[prompt, spatial_img, height, width, seed, control_type],
+        outputs=single_output_image
+    )
+
+# Launch the Gradio app on port 8080
+demo.queue().launch(server_port=8080)
