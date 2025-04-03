@@ -30,11 +30,10 @@ def clear_cache(transformer):
 def single_condition_generate_image(prompt, spatial_img, height, width, seed, control_type):
     # Set the control type
     if control_type == "Ghibli":
-        # You no longer need to load LoRA weights
-        # lora_path = os.path.join(lora_base_path, "Ghibli.safetensors")
-        pass  # Just skip applying LoRA
+        lora_path = os.path.join(lora_base_path, "Ghibli.safetensors")
+    set_single_lora(pipe.transformer, lora_path, lora_weights=[1], cond_size=512)
     
-    # Process the image without applying LoRA
+    # Process the image
     spatial_imgs = [spatial_img] if spatial_img else []
     image = pipe(
         prompt,
@@ -48,8 +47,6 @@ def single_condition_generate_image(prompt, spatial_img, height, width, seed, co
         spatial_images=spatial_imgs,
         cond_size=512,
     ).images[0]
-    
-    # Optionally clear cache if needed, but no LoRA applied now
     clear_cache(pipe.transformer)
     return image
 
