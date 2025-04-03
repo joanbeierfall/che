@@ -3,12 +3,14 @@ import json
 import torch
 import io
 import base64
+import requests
 from PIL import Image
 from flask import Flask, request, jsonify
 from safetensors.torch import save_file
 from src.pipeline import FluxPipeline
 from src.transformer_flux import FluxTransformer2DModel
 from src.lora_helper import set_single_lora
+from io import BytesIO
 
 # Initialize the image processor
 base_path = "black-forest-labs/FLUX.1-dev"    
@@ -25,6 +27,9 @@ def clear_cache(transformer):
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Predefined prompt to be appended or prepended
+PREDEFINED_PROMPT = "Ghibli Studio style, Charming hand-drawn anime-style illustration"
 
 # Helper function to generate the image
 def single_condition_generate_image(prompt, spatial_img, height, width, seed, control_type):
@@ -56,6 +61,18 @@ def single_condition_generate_image(prompt, spatial_img, height, width, seed, co
     
     return img_base64
 
+# Helper function to fetch image from URL
+def fetch_image_from_url(image_url):
+    try:
+        response = requests.get(image_url)
+        if response.status_code == 200:
+            image = Image.open(BytesIO(response.content))
+            return image
+        else:
+            raise Exception(f"Failed to fetch image from URL. Status code: {response.status_code}")
+    except Exception as e:
+        raise Exception(f"Error fetching image: {str(e)}")
+
 # API endpoint for image generation
 @app.route('/generate', methods=['POST'])
 def generate_image():
@@ -64,16 +81,18 @@ def generate_image():
         data = request.json
         
         # Extract parameters from the JSON request
-        prompt = data['prompt']
-        spatial_img_data = data['spatial_img']  # Image as base64 string
+        user_prompt = data['prompt']  # User's input prompt
+        spatial_img_url = data['spatial_img']  # Image URL
         height = int(data['height'])
         width = int(data['width'])
         seed = int(data['seed'])
         control_type = data['control_type']
         
-        # Decode the base64 string to image
-        spatial_img_bytes = base64.b64decode(spatial_img_data)
-        spatial_img = Image.open(io.BytesIO(spatial_img_bytes))
+        # Combine the user-provided prompt with the predefined prompt
+        prompt = user_prompt + " " + PREDEFINED_PROMPT
+        
+        # Fetch the spatial image from URL
+        spatial_img = fetch_image_from_url(spatial_img_url)
 
         # Generate the image
         generated_image_base64 = single_condition_generate_image(prompt, spatial_img, height, width, seed, control_type)
