@@ -1,3 +1,4 @@
+import gradio as gr
 import os
 import torch
 import numpy as np
@@ -25,13 +26,15 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Normalize to [-1, 1] for many models
 ])
 
+# Function to clear the cache
 def clear_cache(transformer):
     for name, attn_processor in transformer.attn_processors.items():
         attn_processor.bank_kv.clear()
 
-def single_condition_generate_image(prompt, spatial_img_path, height, width, seed, control_type, output_image_path):
+# Image generation function
+def generate_image(prompt, spatial_img, height, width, seed, control_type):
     # Load and process the spatial image
-    spatial_img = Image.open(spatial_img_path).convert("RGB")
+    spatial_img = spatial_img.convert("RGB")
     spatial_img = transform(spatial_img).unsqueeze(0).to(device)  # Convert to tensor and add batch dimension
 
     # Set the control type (e.g., Ghibli)
@@ -60,26 +63,30 @@ def single_condition_generate_image(prompt, spatial_img_path, height, width, see
     # Clear the cache after generation
     clear_cache(pipe.transformer)
 
-    # Check if image is generated and save it
-    if image:
-        print(f"Saving image to: {output_image_path}")
-        image.save(output_image_path)
-        print(f"Generated image saved to {output_image_path}")
-    else:
-        print("Image generation failed!")
-    
     return image
 
-# Example usage
-prompt = "Ghibli Studio style, Charming hand-drawn anime-style illustration"
-spatial_img_path = "./test_imgs/00.png"  # Path to the input image
-height = 768
-width = 768
-seed = 42
-control_type = "Ghibli"
-output_image_path = "/root/flx-gbl/output_image.png"  # Absolute path to the generated image
+# Gradio interface
+def gradio_interface(prompt, spatial_img, height, width, seed, control_type):
+    # Generate the image based on the user input
+    generated_image = generate_image(prompt, spatial_img, height, width, seed, control_type)
+    
+    return generated_image
 
-# Call the function to generate the image and save it
-print("Starting image generation...")
-single_condition_generate_image(prompt, spatial_img_path, height, width, seed, control_type, output_image_path)
-print("Script finished.")
+# Define the Gradio interface
+iface = gr.Interface(
+    fn=gradio_interface,
+    inputs=[
+        gr.Textbox(label="Prompt", placeholder="Enter a description for the generated image"),
+        gr.Image(type="pil", label="Upload Spatial Image"),
+        gr.Slider(128, 1024, step=1, label="Height", value=768),
+        gr.Slider(128, 1024, step=1, label="Width", value=768),
+        gr.Slider(1, 100, step=1, label="Seed", value=42),
+        gr.Radio(["Ghibli", "Other"], label="Control Type", value="Ghibli")
+    ],
+    outputs=gr.Image(type="pil"),
+    server_port=8080  # Run on port 8080
+)
+
+# Launch the Gradio app
+if __name__ == "__main__":
+    iface.launch(server_name="0.0.0.0", server_port=8080)
